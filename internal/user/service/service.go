@@ -77,12 +77,14 @@ func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) 
 	}
 
 	emailMsg := model.EmailMessage{
-		Username: user.UserName,
-		Email:    user.Email,
-		Value:    rand.Intn(100000),
+		Email: user.Email,
+		Value: rand.Intn(100000),
 	}
 
-	if err := s.producer.Publish(ctx, s.cfg.RabbitMQ.EmailLogin, emailMsg); err != nil {
+	if err := s.producer.PublishToExchange(ctx,
+		s.cfg.RabbitMQ.Exchange,
+		s.cfg.RabbitMQ.EmailLoginRoutingKey,
+		emailMsg); err != nil {
 		s.logger.Error("failed to publish email message", "error", err)
 	}
 

@@ -1,4 +1,4 @@
-package app
+package user_serivce
 
 import (
 	"Kite/internal/config"
@@ -29,15 +29,8 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("init rabbitmq failed: %w", err)
 	}
-	defer func(rmqManager rabbitmq.ConnectionManager) {
-		err := rmqManager.Close()
-		if err != nil {
-			err = fmt.Errorf("close rabbitmq failed: %w", err)
-			return
-		}
-	}(rmqManager)
 
-	router := newRouter(cfg, logger, db)
+	router := newRouter(cfg, logger, db, rmqManager)
 	server := newHTTPServer(cfg, router)
 
 	return runHTTPServer(ctx, server, logger)
@@ -63,7 +56,7 @@ func newRouter(cfg *config.Config, logger *slog.Logger, db database.DB, rmqManag
 	r.Use(middleware.Logger)
 	r.Use(middleware.Timeout(30 * time.Second))
 
-	producer := rabbitmq.NewProducer(rmqManager)
+	producer := rabbitmq.NewProducer(rmqManager, logger)
 
 	r.Mount("/user", newUserHandler(cfg, logger, db, producer).Routes())
 
@@ -115,16 +108,15 @@ func runHTTPServer(ctx context.Context, server *http.Server, logger *slog.Logger
 }
 
 func initRabbitMQ(ctx context.Context, cfg *config.Config, logger *slog.Logger) (rabbitmq.ConnectionManager, error) {
-	rmqManager := rabbitmq.NewConnectionManager(cfg.RabbitMQ.URL)
+	rmqManager := rabbitmq.NewConnectionManager(cfg.RabbitMQ.URL, logger)
+
+	logger.Info("RabbitMQ manager initialized", "url", cfg.RabbitMQ.URL)
 
 	conn, err := rmqManager.GetConnection()
 	if err != nil {
 		return nil, fmt.Errorf("get rabbitmq connection: %w", err)
 	}
 
-	logger.Info("connected to RabbitMQ", "url", cfg.RabbitMQ.URL)
-
-	// Объявляем обменник если нужно
 	if cfg.RabbitMQ.Exchange != "" {
 		err = conn.Channel.ExchangeDeclare(
 			cfg.RabbitMQ.Exchange,

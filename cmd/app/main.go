@@ -1,7 +1,7 @@
 package main
 
 import (
-	"Kite/internal/app"
+	"Kite/internal/app/user_serivce"
 	"Kite/internal/config"
 	"Kite/pkg/logger"
 	"context"
@@ -22,7 +22,7 @@ func main() {
 
 	logger := slogger.SetupLogger(cfg.Env)
 
-	if err := app.Run(ctx, cfg, logger); err != nil {
+	if err := user_serivce.Run(ctx, cfg, logger); err != nil {
 		logger.Error("error while starting server: ", err)
 		os.Exit(1)
 	}
