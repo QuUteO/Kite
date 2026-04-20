@@ -1,103 +1,100 @@
 package rabbitmq
 
 import (
-	"errors"
+	"log/slog"
 	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type RabbitMQ struct {
-	Conn    *amqp.Connection
-	Channel *amqp.Channel
+	Connection *amqp.Connection
+	Channel    *amqp.Channel
 }
 
 type ConnectionManagerImpl struct {
-	url        string
-	connection *RabbitMQ
-	mu         sync.RWMutex
-	lastError  error
+	url    string
+	conn   *RabbitMQ
+	mu     sync.Mutex
+	logger *slog.Logger
 }
 
 func (c *ConnectionManagerImpl) GetConnection() (*RabbitMQ, error) {
-	c.mu.RLock()
-	if c.connection != nil && c.IsHealthy() {
-		defer c.mu.RUnlock()
-		return c.connection, nil
-	}
-	c.mu.RUnlock()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.connection != nil && c.IsHealthy() {
-		return c.connection, nil
+	if c.conn != nil && !c.conn.Connection.IsClosed() {
+		return c.conn, nil
 	}
 
-	rmq, err := NewRabbitMQ(c.url)
+	c.logger.Info("establishing new connection to rabbitmq", "url", c.url)
+
+	// ВАЖНО: NewRabbitMQ теперь должна возвращать (*RabbitMQ, error)
+	// и не использовать log.Fatalf
+	newConn, err := NewRabbitMQ(c.url)
 	if err != nil {
-		c.lastError = err
+		c.logger.Error("failed to connect to rabbitmq", "error", err)
 		return nil, err
 	}
 
-	c.connection = rmq
-	c.lastError = nil
-	return rmq, nil
+	c.conn = newConn
+
+	return c.conn, nil
 }
 
 func (c *ConnectionManagerImpl) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.connection != nil {
-		c.connection.Close()
-		c.connection = nil
+	if c.conn != nil {
+		if !c.conn.Connection.IsClosed() {
+			c.logger.Info("closing connection to rabbitmq", "url", c.url)
+			c.conn.Close()
+		}
+		c.conn = nil
 	}
 
 	return nil
 }
 
 func (c *ConnectionManagerImpl) IsHealthy() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	if c.connection == nil || c.connection.Conn == nil {
-		return false
-	}
-
-	return !c.connection.Conn.IsClosed()
+	return c.conn != nil && !c.conn.Connection.IsClosed()
 }
 
-func NewConnectionManager(url string) ConnectionManager {
+func NewConnectionManager(url string, logger *slog.Logger) ConnectionManager {
 	return &ConnectionManagerImpl{
-		url: url,
+		url:    url,
+		logger: logger,
 	}
 }
 
 func NewRabbitMQ(url string) (*RabbitMQ, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
-		return nil, errors.New("Failed to connect to RabbitMQ: " + err.Error())
+		return nil, err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
 		conn.Close()
-		return nil, errors.New("Failed to open a channel: " + err.Error())
+		return nil, err
 	}
 
 	return &RabbitMQ{
-		Conn:    conn,
-		Channel: ch,
+		Connection: conn,
+		Channel:    ch,
 	}, nil
 }
 
 func (r *RabbitMQ) Close() {
 	if r.Channel != nil {
-		_ = r.Conn.Close()
+		r.Channel.Close()
 	}
 
-	if r.Conn != nil {
-		_ = r.Conn.Close()
+	if r.Connection != nil {
+		r.Connection.Close()
 	}
 }

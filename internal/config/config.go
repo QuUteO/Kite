@@ -12,6 +12,7 @@ type Config struct {
 	HTTP     HTTPServer `yaml:"HTTP"`
 	JWT      JWT        `yaml:"JWT"`
 	RabbitMQ RabbitMQ   `yaml:"RABBITMQ"`
+	SMTP     SMTP       `yaml:"SMTP"`
 }
 
 type Postgres struct {
@@ -41,8 +42,15 @@ type JWT struct {
 type RabbitMQ struct {
 	URL                  string `yaml:"URL"`
 	Exchange             string `yaml:"EXCHANGE"`
-	EmailLogin           string `yaml:"EMAIL_LOGIN_QUEUE"`
-	EmailLoginRoutingKey string `yaml:"EMAIL_LOGIN_ROUTING_KEY"`
+	EmailRegisterQueue   string `yaml:"EMAIL_REGISTER_QUEUE"`
+	EmailLoginRoutingKey string `yaml:"EMAIL_REGISTER_ROUTING_KEY"`
+}
+
+type SMTP struct {
+	From     string `yaml:"FROM"`
+	Password string `yaml:"PASSWORD"`
+	Host     string `yaml:"HOST"`
+	Port     string `yaml:"PORT"`
 }
 
 func LoadConfig(path string) (*Config, error) {

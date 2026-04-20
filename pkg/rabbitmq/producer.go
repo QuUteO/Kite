@@ -3,91 +3,45 @@ package rabbitmq
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-type ProducerImpl struct {
+type Producer struct {
 	connManager ConnectionManager
-	queueConfig map[string]QueueConfig
+	logger      *slog.Logger
+	mu          sync.Mutex
 }
 
-type QueueConfig struct {
-	Durable    bool
-	AutoDelete bool
-	Exclusive  bool
-	NoWait     bool
-}
-
-func NewProducer(connManager ConnectionManager) Publisher {
-	return &ProducerImpl{
+func NewProducer(connManager ConnectionManager, logger *slog.Logger) *Producer {
+	return &Producer{
 		connManager: connManager,
-		queueConfig: make(map[string]QueueConfig),
+		logger:      logger,
 	}
 }
 
-func (p *ProducerImpl) Publish(ctx context.Context, queue string, data interface{}) error {
+func (p *Producer) PublishToExchange(ctx context.Context, exchange, routingKey string, data interface{}) error {
 	rmq, err := p.connManager.GetConnection()
 	if err != nil {
-		return errors.New("failed to get connection: " + err.Error())
+		p.logger.Error("failed to connect to exchange")
+		return err
 	}
 
 	body, err := json.Marshal(data)
 	if err != nil {
-		return errors.New("failed to marshal json: " + err.Error())
+		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	// Получаем или используем дефолтную конфигурацию очереди
-	cfg := p.queueConfig[queue]
-	if cfg == (QueueConfig{}) {
-		cfg = QueueConfig{Durable: true}
-	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	_, err = rmq.Channel.QueueDeclare(
-		queue,
-		cfg.Durable,
-		cfg.AutoDelete,
-		cfg.Exclusive,
-		cfg.NoWait,
-		nil,
-	)
-	if err != nil {
-		return errors.New("failed to declare queue: " + err.Error())
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*3)
 	defer cancel()
-
-	return rmq.Channel.PublishWithContext(
-		ctx,
-		"",
-		queue,
-		false,
-		false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-		},
-	)
-}
-
-func (p *ProducerImpl) PublishToExchange(ctx context.Context, exchange, routingKey string, data interface{}) error {
-	rmq, err := p.connManager.GetConnection()
-	if err != nil {
-		return errors.New("failed to get connection: " + err.Error())
-	}
-
-	body, err := json.Marshal(data)
-	if err != nil {
-		return errors.New("failed to marshal json: " + err.Error())
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	return rmq.Channel.PublishWithContext(
+	err = rmq.Channel.PublishWithContext(
 		ctx,
 		exchange,
 		routingKey,
@@ -98,9 +52,10 @@ func (p *ProducerImpl) PublishToExchange(ctx context.Context, exchange, routingK
 			Body:        body,
 		},
 	)
-}
 
-// SetQueueConfig устанавливает конфигурацию для очереди
-func (p *ProducerImpl) SetQueueConfig(queue string, cfg QueueConfig) {
-	p.queueConfig[queue] = cfg
+	if err != nil {
+		return fmt.Errorf("failed to publish data: %w", err)
+	}
+
+	return nil
 }
