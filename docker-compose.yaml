@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  Kite_Postgres:
+    image: postgres:16-alpine
+    container_name: kite_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  RabbitMQ:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    hostname: rabbitmq
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
