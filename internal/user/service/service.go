@@ -42,8 +42,18 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 )
 
+func New(repo repository.Repository, logger *slog.Logger, jwtSecret string, producer rabbitmq.Publisher, cfg *config.Config) Service {
+	return &service{
+		repo:      repo,
+		logger:    logger,
+		jwtSecret: jwtSecret,
+		producer:  producer,
+		cfg:       cfg,
+	}
+}
+
 func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) error {
-	logger := s.logger.With("op", "service/CreateUser")
+	logger := s.logger.With("op", "CreateUser")
 
 	if userDto == nil {
 		return fmt.Errorf("create user: %w", ErrInvalidInput)
@@ -52,13 +62,14 @@ func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) 
 	userName := strings.TrimSpace(userDto.UserName)
 	email := strings.TrimSpace(userDto.Email)
 	password := strings.TrimSpace(userDto.Password)
+
 	if userName == "" || email == "" || password == "" {
 		return fmt.Errorf("create user: %w", ErrInvalidInput)
 	}
 
 	id := uuid.New()
 
-	hashPass, err := s.hash(password)
+	hashPass, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
@@ -67,32 +78,37 @@ func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) 
 		ID:           id,
 		UserName:     userName,
 		Email:        email,
-		PasswordHash: hashPass,
+		PasswordHash: string(hashPass),
 	}
-
-	logger.Info("user created in service", "user_id", id, "email", email)
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
-		return fmt.Errorf("create user: %w", err)
+		return fmt.Errorf("create user in repo: %w", err)
 	}
 
-	emailMsg := model.EmailMessage{
-		Email: user.Email,
-		Value: rand.Intn(100000),
-	}
+	logger.Info("user created", "user_id", id, "email", email)
 
-	if err := s.producer.PublishToExchange(ctx,
-		s.cfg.RabbitMQ.Exchange,
-		s.cfg.RabbitMQ.EmailLoginRoutingKey,
-		emailMsg); err != nil {
-		s.logger.Error("failed to publish email message", "error", err)
-	}
+	// Publish email notification-service asynchronously
+	go func() {
+		emailMsg := model.EmailMessage{
+			Email: user.Email,
+			Value: rand.Intn(100000),
+		}
+
+		if err := s.producer.PublishToExchange(context.Background(),
+			s.cfg.RabbitMQ.Exchange,
+			s.cfg.RabbitMQ.RegisterRoutingKey,
+			emailMsg); err != nil {
+			s.logger.Error("failed to publish email message", "error", err)
+		} else {
+			s.logger.Info("email notification-service published", "email", user.Email)
+		}
+	}()
 
 	return nil
 }
 
 func (s *service) UpdateUser(ctx context.Context, id uuid.UUID, userDto *model.UserUpdateDTO) error {
-	logger := s.logger.With("op", "service/UpdateUser", "user_id", id)
+	logger := s.logger.With("op", "UpdateUser", "user_id", id)
 
 	if userDto == nil {
 		return fmt.Errorf("update user: %w", ErrInvalidInput)
@@ -104,9 +120,6 @@ func (s *service) UpdateUser(ctx context.Context, id uuid.UUID, userDto *model.U
 			return fmt.Errorf("update user: %w", ErrUserNotFound)
 		}
 		return fmt.Errorf("find user by id: %w", err)
-	}
-	if user == nil {
-		return fmt.Errorf("update user: %w", ErrUserNotFound)
 	}
 
 	if userDto.UserName == nil && userDto.Email == nil {
@@ -129,32 +142,30 @@ func (s *service) UpdateUser(ctx context.Context, id uuid.UUID, userDto *model.U
 		user.Email = email
 	}
 
-	logger.Info("user updated in service")
-
 	if err := s.repo.UpdateUser(ctx, user); err != nil {
-		return fmt.Errorf("update user: %w", err)
+		return fmt.Errorf("update user in repo: %w", err)
 	}
 
+	logger.Info("user updated")
 	return nil
 }
 
 func (s *service) DeleteUser(ctx context.Context, id uuid.UUID) error {
-	logger := s.logger.With("op", "service/DeleteUser", "user_id", id)
+	logger := s.logger.With("op", "DeleteUser", "user_id", id)
 
 	if err := s.repo.DeleteUser(ctx, id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("delete user: %w", ErrUserNotFound)
 		}
-		return fmt.Errorf("delete user: %w", err)
+		return fmt.Errorf("delete user in repo: %w", err)
 	}
 
-	logger.Info("user deleted in service")
-
+	logger.Info("user deleted")
 	return nil
 }
 
 func (s *service) FindUserByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
-	logger := s.logger.With("op", "service/FindUserByID", "user_id", id)
+	logger := s.logger.With("op", "FindUserByID", "user_id", id)
 
 	user, err := s.repo.FindUserByID(ctx, id)
 	if err != nil {
@@ -163,12 +174,8 @@ func (s *service) FindUserByID(ctx context.Context, id uuid.UUID) (*model.User, 
 		}
 		return nil, fmt.Errorf("find user by id: %w", err)
 	}
-	if user == nil {
-		return nil, fmt.Errorf("find user by id: %w", ErrUserNotFound)
-	}
 
-	logger.Info("user found in service")
-
+	logger.Info("user found")
 	return user, nil
 }
 
@@ -179,6 +186,7 @@ func (s *service) LoginUser(ctx context.Context, userDTO *model.UserLoginDTO) (*
 
 	email := strings.TrimSpace(userDTO.Email)
 	password := strings.TrimSpace(userDTO.Password)
+
 	if email == "" || password == "" {
 		return nil, fmt.Errorf("login user: %w", ErrInvalidInput)
 	}
@@ -190,15 +198,12 @@ func (s *service) LoginUser(ctx context.Context, userDTO *model.UserLoginDTO) (*
 		}
 		return nil, fmt.Errorf("find user by email: %w", err)
 	}
-	if user == nil {
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return nil, fmt.Errorf("login user: %w", ErrInvalidCredentials)
 	}
 
-	if !s.verifyPassword(password, user.PasswordHash) {
-		return nil, fmt.Errorf("login user: %w", ErrInvalidCredentials)
-	}
-
-	accessToken, err := s.generateJWT(user.ID, time.Minute*15)
+	accessToken, err := s.generateJWT(user.ID, s.cfg.JWT.AccessTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
@@ -208,7 +213,7 @@ func (s *service) LoginUser(ctx context.Context, userDTO *model.UserLoginDTO) (*
 	err = s.repo.CreateSession(ctx, &model.Session{
 		UserID:       user.ID,
 		RefreshToken: refreshToken,
-		ExpiresAt:    time.Now().Add(time.Hour * 24),
+		ExpiresAt:    time.Now().Add(s.cfg.JWT.RefreshTTL),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
@@ -236,40 +241,14 @@ func (s *service) Logout(ctx context.Context, refreshToken string) error {
 	return nil
 }
 
-func (s *service) hash(password string) (string, error) {
-	hashPass, err := bcrypt.GenerateFromPassword([]byte(password), 14)
-	if err != nil {
-		return "", err
-	}
-
-	return string(hashPass), nil
-}
-
-func (s *service) verifyPassword(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	if err != nil {
-		return false
-	}
-	return true
-}
-
 func (s *service) generateJWT(userID uuid.UUID, ttl time.Duration) (string, error) {
 	claims := model.UserClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 		UserID: userID.String(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(s.jwtSecret))
-}
-
-func New(repo repository.Repository, logger *slog.Logger, jwtSecret string, producer rabbitmq.Publisher, cfg *config.Config) Service {
-	return &service{
-		repo:      repo,
-		logger:    logger,
-		jwtSecret: jwtSecret,
-		producer:  producer,
-		cfg:       cfg,
-	}
 }

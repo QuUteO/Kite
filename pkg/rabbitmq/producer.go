@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -14,7 +13,6 @@ import (
 type Producer struct {
 	connManager ConnectionManager
 	logger      *slog.Logger
-	mu          sync.Mutex
 }
 
 func NewProducer(connManager ConnectionManager, logger *slog.Logger) *Producer {
@@ -27,39 +25,48 @@ func NewProducer(connManager ConnectionManager, logger *slog.Logger) *Producer {
 func (p *Producer) PublishToExchange(ctx context.Context, exchange, routingKey string, data interface{}) error {
 	rmq, err := p.connManager.GetConnection()
 	if err != nil {
-		return err
+		return fmt.Errorf("get connection: %w", err)
 	}
 
-	err = rmq.Channel.ExchangeDeclare(
+	// Declare exchange
+	if err := rmq.Channel.ExchangeDeclare(
 		exchange,
 		"topic",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return fmt.Errorf("exchange declare failed: %w", err)
+		true,  // durable
+		false, // auto-delete
+		false, // internal
+		false, // no-wait
+		nil,   // args
+	); err != nil {
+		return fmt.Errorf("declare exchange: %w", err)
 	}
 
 	body, err := json.Marshal(data)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal message: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	return rmq.Channel.PublishWithContext(
+	if err := rmq.Channel.PublishWithContext(
 		ctx,
 		exchange,
 		routingKey,
-		false,
-		false,
+		false, // mandatory
+		false, // immediate
 		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent,
+			Timestamp:    time.Now(),
 		},
-	)
+	); err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
+
+	p.logger.Debug("message published",
+		"exchange", exchange,
+		"routing_key", routingKey)
+	return nil
 }

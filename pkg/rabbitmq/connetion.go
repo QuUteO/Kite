@@ -12,56 +12,26 @@ type RabbitMQ struct {
 	Channel    *amqp.Channel
 }
 
+func (r *RabbitMQ) Close() error {
+	var err error
+	if r.Channel != nil {
+		if cerr := r.Channel.Close(); cerr != nil {
+			err = cerr
+		}
+	}
+	if r.Connection != nil {
+		if cerr := r.Connection.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
+}
+
 type ConnectionManagerImpl struct {
 	url    string
 	conn   *RabbitMQ
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	logger *slog.Logger
-}
-
-func (c *ConnectionManagerImpl) GetConnection() (*RabbitMQ, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil && !c.conn.Connection.IsClosed() {
-		return c.conn, nil
-	}
-
-	c.logger.Info("establishing new connection to rabbitmq", "url", c.url)
-
-	// ВАЖНО: NewRabbitMQ теперь должна возвращать (*RabbitMQ, error)
-	// и не использовать log.Fatalf
-	newConn, err := NewRabbitMQ(c.url)
-	if err != nil {
-		c.logger.Error("failed to connect to rabbitmq", "error", err)
-		return nil, err
-	}
-
-	c.conn = newConn
-
-	return c.conn, nil
-}
-
-func (c *ConnectionManagerImpl) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil {
-		if !c.conn.Connection.IsClosed() {
-			c.logger.Info("closing connection to rabbitmq", "url", c.url)
-			c.conn.Close()
-		}
-		c.conn = nil
-	}
-
-	return nil
-}
-
-func (c *ConnectionManagerImpl) IsHealthy() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.conn != nil && !c.conn.Connection.IsClosed()
 }
 
 func NewConnectionManager(url string, logger *slog.Logger) ConnectionManager {
@@ -71,8 +41,25 @@ func NewConnectionManager(url string, logger *slog.Logger) ConnectionManager {
 	}
 }
 
-func NewRabbitMQ(url string) (*RabbitMQ, error) {
-	conn, err := amqp.Dial(url)
+func (m *ConnectionManagerImpl) GetConnection() (*RabbitMQ, error) {
+	m.mu.RLock()
+	if m.conn != nil && m.conn.Connection != nil && !m.conn.Connection.IsClosed() {
+		defer m.mu.RUnlock()
+		return m.conn, nil
+	}
+	m.mu.RUnlock()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Double check after acquiring write lock
+	if m.conn != nil && m.conn.Connection != nil && !m.conn.Connection.IsClosed() {
+		return m.conn, nil
+	}
+
+	m.logger.Info("establishing new connection to rabbitmq", "url", m.url)
+
+	conn, err := amqp.Dial(m.url)
 	if err != nil {
 		return nil, err
 	}
@@ -83,18 +70,32 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 		return nil, err
 	}
 
-	return &RabbitMQ{
+	m.conn = &RabbitMQ{
 		Connection: conn,
 		Channel:    ch,
-	}, nil
+	}
+
+	return m.conn, nil
 }
 
-func (r *RabbitMQ) Close() {
-	if r.Channel != nil {
-		r.Channel.Close()
-	}
+func (m *ConnectionManagerImpl) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if r.Connection != nil {
-		r.Connection.Close()
+	if m.conn != nil {
+		m.logger.Info("closing rabbitmq connection")
+		if err := m.conn.Close(); err != nil {
+			m.logger.Error("error closing rabbitmq connection", "error", err)
+			return err
+		}
+		m.conn = nil
 	}
+	return nil
+}
+
+func (m *ConnectionManagerImpl) IsHealthy() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.conn != nil && m.conn.Connection != nil && !m.conn.Connection.IsClosed()
 }

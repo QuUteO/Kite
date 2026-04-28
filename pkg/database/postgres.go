@@ -52,11 +52,11 @@ func New(ctx context.Context, cfg *config.Postgres) (DB, error) {
 
 	// строка подключения
 	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		cfg.PostgresUser,
-		cfg.PostgresPassword,
-		cfg.PostgresHost,
-		cfg.PostgresPort,
-		cfg.PostgresDatabase,
+		cfg.User,
+		cfg.Password,
+		cfg.Host,
+		cfg.Port,
+		cfg.Database,
 		cfg.SSLMode,
 	)
 
@@ -66,8 +66,8 @@ func New(ctx context.Context, cfg *config.Postgres) (DB, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	parseConfig.MaxConns = cfg.MaxConnections
-	parseConfig.MinConns = cfg.MinConnections
+	parseConfig.MaxConns = cfg.MaxConns
+	parseConfig.MinConns = cfg.MinConns
 	parseConfig.MaxConnLifetime = MaxConnLifetime
 	parseConfig.MaxConnIdleTime = MaxConnIdleTime
 

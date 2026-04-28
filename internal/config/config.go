@@ -1,3 +1,4 @@
+// internal/config/config.go - альтернативный вариант с YAML тегами
 package config
 
 import (
@@ -7,8 +8,8 @@ import (
 )
 
 type Config struct {
-	Postgres Postgres   `yaml:"POSTGRES"`
 	Env      string     `yaml:"ENV" default:"dev"`
+	Postgres Postgres   `yaml:"POSTGRES"`
 	HTTP     HTTPServer `yaml:"HTTP"`
 	JWT      JWT        `yaml:"JWT"`
 	RabbitMQ RabbitMQ   `yaml:"RABBITMQ"`
@@ -16,49 +17,47 @@ type Config struct {
 }
 
 type Postgres struct {
-	PostgresHost     string `yaml:"POSTGRES_HOST" default:"5432"`
-	PostgresPort     uint16 `yaml:"POSTGRES_PORT" env-default:"5432"`
-	PostgresUser     string `yaml:"POSTGRES_USER" env-default:"postgres"`
-	PostgresPassword string `yaml:"POSTGRES_PASSWORD" env-default:"postgres"`
-	PostgresDatabase string `yaml:"POSTGRES_DB" env-default:"postgres"`
-	SSLMode          string `yaml:"SSL_MODE" default:"disable"`
-	MaxConnections   int32  `yaml:"MAX_CONNS" default:"10"`
-	MinConnections   int32  `yaml:"MIN_CONNS" default:"2"`
+	Host     string `yaml:"POSTGRES_HOST" default:"localhost"`
+	Port     uint16 `yaml:"POSTGRES_PORT" default:"5432"`
+	User     string `yaml:"POSTGRES_USER" default:"postgres"`
+	Password string `yaml:"POSTGRES_PASSWORD" default:"postgres"`
+	Database string `yaml:"POSTGRES_DB" default:"postgres"`
+	SSLMode  string `yaml:"SSL_MODE" default:"disable"`
+	MaxConns int32  `yaml:"MAX_CONNS" default:"10"`
+	MinConns int32  `yaml:"MIN_CONNS" default:"5"`
 }
 
 type HTTPServer struct {
-	Address      string        `yaml:"ADDRESS" default:"localhost:8081"`
+	Address      string        `yaml:"ADDRESS" default:"localhost:8080"`
 	ReadTimeout  time.Duration `yaml:"READ_TIMEOUT" default:"10s"`
 	WriteTimeout time.Duration `yaml:"WRITE_TIMEOUT" default:"10s"`
-	IdleTimeout  time.Duration `yaml:"IDLE_TIMEOUT" default:"10s"`
+	IdleTimeout  time.Duration `yaml:"IDLE_TIMEOUT" default:"120s"`
 }
 
 type JWT struct {
 	Secret     string        `yaml:"SECRET" env-required:"true"`
-	AccessTTL  time.Duration `yaml:"ACCESS_TTL" env-required:"true"`
-	RefreshTTL time.Duration `yaml:"REFRESH_TTL" env-required:"true"`
+	AccessTTL  time.Duration `yaml:"ACCESS_TTL" default:"15m"`
+	RefreshTTL time.Duration `yaml:"REFRESH_TTL" default:"24h"`
 }
 
 type RabbitMQ struct {
-	URL                  string `yaml:"URL"`
-	Exchange             string `yaml:"EXCHANGE"`
-	EmailRegisterQueue   string `yaml:"EMAIL_REGISTER_QUEUE"`
-	EmailLoginRoutingKey string `yaml:"EMAIL_REGISTER_ROUTING_KEY"`
+	URL                string `yaml:"URL" env-required:"true"`
+	Exchange           string `yaml:"EXCHANGE" default:"kite.events"`
+	RegisterQueue      string `yaml:"REGISTER_QUEUE" default:"auth.email.register"`
+	RegisterRoutingKey string `yaml:"REGISTER_ROUTING_KEY" default:"auth.email.register"`
 }
 
 type SMTP struct {
-	From     string `yaml:"FROM"`
-	Password string `yaml:"PASSWORD"`
-	Host     string `yaml:"HOST"`
-	Port     string `yaml:"PORT"`
+	From     string `yaml:"FROM" env-required:"true"`
+	Password string `yaml:"PASSWORD" env-required:"true"`
+	Host     string `yaml:"HOST" env-required:"true"`
+	Port     string `yaml:"PORT" default:"587"`
 }
 
 func LoadConfig(path string) (*Config, error) {
 	var cfg Config
-	err := cleanenv.ReadConfig(path, &cfg)
-	if err != nil {
+	if err := cleanenv.ReadConfig(path, &cfg); err != nil {
 		return nil, err
 	}
-
 	return &cfg, nil
 }
