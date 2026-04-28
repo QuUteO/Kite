@@ -1,7 +1,10 @@
-package rabbitmq
+package email_sender
 
 import (
+	"Kite/pkg/rabbitmq"
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -9,8 +12,9 @@ import (
 )
 
 type RabbitConsumer struct {
-	connManager ConnectionManager
+	connManager rabbitmq.ConnectionManager
 	logger      *slog.Logger
+	emailSender EmailSender
 }
 
 func (r *RabbitConsumer) SubscribeWithExchange(ctx context.Context, exchange, queue, routingKey string) error {
@@ -36,15 +40,14 @@ func (r *RabbitConsumer) SubscribeWithExchange(ctx context.Context, exchange, qu
 					continue
 				}
 
-				// 3. Подписываемся
 				msgs, err := rmq.Channel.Consume(
 					queue,
-					"",    // consumer tag
-					false, // auto-ack (лучше false для надежности)
-					false, // exclusive
-					false, // no-local
-					false, // no-wait
-					nil,   // args
+					"",
+					false,
+					false,
+					false,
+					false,
+					nil,
 				)
 				if err != nil {
 					r.logger.Error("failed to consume", "error", err)
@@ -56,14 +59,29 @@ func (r *RabbitConsumer) SubscribeWithExchange(ctx context.Context, exchange, qu
 
 				// 4. Читаем сообщения
 				for d := range msgs {
-					r.logger.Info("message received", "body", string(d.Body))
-
-					if err := d.Ack(false); err != nil {
-						r.logger.Error("failed to ack message", "error", err)
+					var msg struct {
+						Email string `json:"email"`
+						Value int    `json:"value"`
 					}
-				}
 
-				r.logger.Warn("channel closed, reconnecting...")
+					if err := json.Unmarshal(d.Body, &msg); err != nil {
+						r.logger.Error("invalid message", "error", err)
+						d.Nack(false, false)
+						continue
+					}
+
+					body := fmt.Sprintf("Your random number is: %d", msg.Value)
+
+					if err := r.emailSender.Send(msg.Email, body); err != nil {
+						r.logger.Error("failed to send email", "error", err)
+						d.Nack(false, true)
+						continue
+					}
+
+					r.logger.Info("email sent", "to", msg.Email)
+
+					d.Ack(false)
+				}
 			}
 		}
 	}()
@@ -72,40 +90,38 @@ func (r *RabbitConsumer) SubscribeWithExchange(ctx context.Context, exchange, qu
 }
 
 func (r *RabbitConsumer) setupTopology(ch *amqp.Channel, exchange, queue, routingKey string) error {
-	// Объявляем обменник
 	err := ch.ExchangeDeclare(
 		exchange,
-		"topic", // или "direct" в зависимости от задач
-		true,    // durable
-		false,   // auto-deleted
-		false,   // internal
-		false,   // no-wait
-		nil,     // arguments
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		return err
 	}
 
-	// Объявляем очередь
 	_, err = ch.QueueDeclare(
 		queue,
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		return err
 	}
 
-	// Связываем их
 	return ch.QueueBind(queue, routingKey, exchange, false, nil)
 }
 
-func NewConsumer(connManager ConnectionManager, logger *slog.Logger) Consumer {
+func NewConsumer(connManager rabbitmq.ConnectionManager, logger *slog.Logger, sender EmailSender) rabbitmq.Consumer {
 	return &RabbitConsumer{
 		connManager: connManager,
 		logger:      logger,
+		emailSender: sender,
 	}
 }

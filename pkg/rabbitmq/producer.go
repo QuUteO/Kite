@@ -27,21 +27,31 @@ func NewProducer(connManager ConnectionManager, logger *slog.Logger) *Producer {
 func (p *Producer) PublishToExchange(ctx context.Context, exchange, routingKey string, data interface{}) error {
 	rmq, err := p.connManager.GetConnection()
 	if err != nil {
-		p.logger.Error("failed to connect to exchange")
 		return err
+	}
+
+	err = rmq.Channel.ExchangeDeclare(
+		exchange,
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("exchange declare failed: %w", err)
 	}
 
 	body, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
+		return err
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(ctx, time.Second*3)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	err = rmq.Channel.PublishWithContext(
+
+	return rmq.Channel.PublishWithContext(
 		ctx,
 		exchange,
 		routingKey,
@@ -52,10 +62,4 @@ func (p *Producer) PublishToExchange(ctx context.Context, exchange, routingKey s
 			Body:        body,
 		},
 	)
-
-	if err != nil {
-		return fmt.Errorf("failed to publish data: %w", err)
-	}
-
-	return nil
 }

@@ -32,11 +32,11 @@ func main() {
 	// Проверяем очередь
 	_, err = conn.Channel.QueueDeclare(
 		cfg.RabbitMQ.EmailRegisterQueue,
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
 		logger.Error("Failed to declare queue: %v", err)
@@ -53,7 +53,7 @@ func main() {
 	if err != nil {
 		logger.Error("Binding might not exist: %v", err)
 	} else {
-		logger.Error("Binding exists or created")
+		logger.Info("Binding exists or created")
 	}
 
 	service := notification.NewNotification(cfg, logger)
