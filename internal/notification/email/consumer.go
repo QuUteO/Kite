@@ -150,14 +150,26 @@ func (c *Consumer) processMessage(msg amqp.Delivery) error {
 		return fmt.Errorf("email address is empty")
 	}
 
-	body := fmt.Sprintf("Your verification code is: %d", emailMsg.Value)
+	// Форматируем письмо с кодом верификации
+	body := fmt.Sprintf(`
+Добро пожаловать в Kite
 
-	c.logger.Info("sending email", "to", emailMsg.Email, "code", emailMsg.Value)
+Ваш верификационный код: %06d
+
+Код действует 15 минут.
+
+Если вы не регистрировались, то просто проигнорируйте это сообщение.
+
+С лучшими пожеланиями,
+Kite Team
+`, emailMsg.Value)
+
+	c.logger.Info("sending verification email", "to", emailMsg.Email, "code", emailMsg.Value)
 
 	if err := c.emailSender.Send(emailMsg.Email, body); err != nil {
 		return fmt.Errorf("send email: %w", err)
 	}
 
-	c.logger.Info("email sent successfully", "to", emailMsg.Email)
+	c.logger.Info("verification email sent successfully", "to", emailMsg.Email)
 	return nil
 }
