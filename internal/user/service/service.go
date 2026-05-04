@@ -26,6 +26,10 @@ type Service interface {
 	FindUserByID(ctx context.Context, id uuid.UUID) (*model.User, error)
 	LoginUser(ctx context.Context, userDTO *model.UserLoginDTO) (*model.TokenResponse, error)
 	Logout(ctx context.Context, refreshToken string) error
+
+	VerifyUser(ctx context.Context, verifyDTO *model.VerificationDTO) error
+	ResendVerificationCode(ctx context.Context, email string) error
+	IsUserVerified(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 type service struct {
@@ -67,6 +71,11 @@ func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) 
 		return fmt.Errorf("create user: %w", ErrInvalidInput)
 	}
 
+	existingUser, err := s.repo.FindUserByEmail(ctx, email)
+	if existingUser != nil {
+		return fmt.Errorf("user with %s already exists", email)
+	}
+
 	id := uuid.New()
 
 	hashPass, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -79,31 +88,48 @@ func (s *service) CreateUser(ctx context.Context, userDto *model.UserCreateDTO) 
 		UserName:     userName,
 		Email:        email,
 		PasswordHash: string(hashPass),
+		IsVerified:   false, // По умолчанию false
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
 		return fmt.Errorf("create user in repo: %w", err)
 	}
 
-	logger.Info("user created", "user_id", id, "email", email)
+	// Генерируем код верификации
+	code := generateVerificationCode()
 
-	// Publish email notification-service asynchronously
+	// Сохраняем код в БД
+	verification := &model.Verification{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		Code:      code,
+		Status:    model.StatusPending,
+		Type:      "email_verification",
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+
+	if err := s.repo.CreateVerification(ctx, verification); err != nil {
+		s.logger.Error("failed to save verification code", "error", err)
+	}
+
+	// Отправляем код на email
 	go func() {
 		emailMsg := model.EmailMessage{
 			Email: user.Email,
-			Value: rand.Intn(100000),
+			Value: parseInt(code),
 		}
 
 		if err := s.producer.PublishToExchange(context.Background(),
 			s.cfg.RabbitMQ.Exchange,
 			s.cfg.RabbitMQ.RegisterRoutingKey,
 			emailMsg); err != nil {
-			s.logger.Error("failed to publish email message", "error", err)
-		} else {
-			s.logger.Info("email notification-service published", "email", user.Email)
+			s.logger.Error("failed to send verification email", "error", err)
 		}
 	}()
 
+	logger.Info("user created, verification code sent", "user_id", id)
 	return nil
 }
 
@@ -239,6 +265,114 @@ func (s *service) Logout(ctx context.Context, refreshToken string) error {
 	}
 
 	return nil
+}
+
+func (s *service) VerifyUser(ctx context.Context, verifyDTO *model.VerificationDTO) error {
+	logger := s.logger.With("op", "VerifyUser", "email", verifyDTO.Email)
+
+	user, err := s.repo.FindUserByEmail(ctx, verifyDTO.Email)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("find user by email: %w", ErrUserNotFound)
+		}
+		return fmt.Errorf("find user by email: %w", err)
+	}
+
+	if user.IsVerified {
+		return errors.New("user already verified")
+	}
+
+	verification, err := s.repo.FindVerificationByCode(ctx, verifyDTO.Code, user.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("find verification by code: %w", err)
+		}
+		return fmt.Errorf("find verification by code: %w", err)
+	}
+
+	if verification == nil {
+		return fmt.Errorf("invalid or expired verification code")
+	}
+
+	if err := s.repo.UpdateVerificationStatus(ctx, verification.ID, model.StatusVerified); err != nil {
+		return fmt.Errorf("update verification status: %w", err)
+	}
+
+	// Отмечаем пользователя как верифицированного
+	if err := s.repo.MarkUserVerified(ctx, user.ID); err != nil {
+		return fmt.Errorf("mark user verified: %w", err)
+	}
+
+	logger.Info("user verified successfully", "user_id", user.ID)
+	return nil
+}
+
+func (s *service) ResendVerificationCode(ctx context.Context, email string) error {
+	logger := s.logger.With("op", "ResendVerificationCode")
+
+	user, err := s.repo.FindUserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("find user by email: %w", ErrUserNotFound)
+		}
+		return fmt.Errorf("find user by email: %w", err)
+	}
+
+	if user.IsVerified {
+		return errors.New("user already verified")
+	}
+
+	code := generateVerificationCode()
+
+	verification := &model.Verification{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		Code:      code,
+		Status:    model.StatusPending,
+		Type:      "email_verification",
+		ExpiresAt: time.Now().Add(15 * time.Minute),
+	}
+
+	if err := s.repo.CreateVerification(ctx, verification); err != nil {
+		return fmt.Errorf("create verification: %w", err)
+	}
+
+	go func() {
+		emailMsg := model.EmailMessage{
+			Email: user.Email,
+			Value: parseInt(code),
+		}
+		if err := s.producer.PublishToExchange(context.Background(),
+			s.cfg.RabbitMQ.Exchange,
+			s.cfg.RabbitMQ.RegisterRoutingKey,
+			emailMsg,
+		); err != nil {
+			logger.Error("failed to publish email message", "err", err)
+		} else {
+			logger.Info("email message published", "email", emailMsg)
+		}
+	}()
+
+	logger.Info("verification code resent")
+	return nil
+}
+
+func (s *service) IsUserVerified(ctx context.Context, userID uuid.UUID) (bool, error) {
+	user, err := s.repo.FindUserByID(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("find user: %w", err)
+	}
+	return user.IsVerified, nil
+}
+
+func generateVerificationCode() string {
+	return fmt.Sprintf("%06d", rand.Intn(1000000))
+}
+
+func parseInt(s string) int {
+	var result int
+	fmt.Sscanf(s, "%d", &result)
+	return result
 }
 
 func (s *service) generateJWT(userID uuid.UUID, ttl time.Duration) (string, error) {

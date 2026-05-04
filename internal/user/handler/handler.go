@@ -190,6 +190,49 @@ func (h *Handler) LogoutUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// VerifyUser - верификация пользователя
+func (h *Handler) VerifyUser(w http.ResponseWriter, r *http.Request) {
+	var req model.VerificationDTO
+	if err := decodeJSON(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.srv.VerifyUser(r.Context(), &req); err != nil {
+		h.logger.Warn("verification failed", "error", err)
+
+		status := http.StatusBadRequest
+		if err.Error() == "user already verified" {
+			status = http.StatusConflict
+		}
+		h.writeError(w, status, err)
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]string{
+		"message": "email verified successfully",
+	})
+}
+
+// ResendVerificationCode - повторная отправка кода
+func (h *Handler) ResendVerificationCode(w http.ResponseWriter, r *http.Request) {
+	var req model.ResendCodeDTO
+	if err := decodeJSON(r, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.srv.ResendVerificationCode(r.Context(), req.Email); err != nil {
+		h.logger.Warn("failed to resend code", "error", err)
+		h.writeServiceError(w, err)
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, map[string]string{
+		"message": "verification code sent successfully",
+	})
+}
+
 func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -222,6 +265,38 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (h *Handler) VerifiedOnlyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Получаем userID из контекста (устанавливается в AuthMiddleware)
+		userID, ok := r.Context().Value(userIDContextKey).(string)
+		if !ok {
+			h.writeError(w, http.StatusUnauthorized, errors.New("unauthorized"))
+			return
+		}
+
+		uuidUserID, err := uuid.Parse(userID)
+		if err != nil {
+			h.writeError(w, http.StatusUnauthorized, errors.New("invalid user id"))
+			return
+		}
+
+		// Проверяем, верифицирован ли пользователь
+		isVerified, err := h.srv.IsUserVerified(r.Context(), uuidUserID)
+		if err != nil {
+			h.logger.Error("failed to check verification", "error", err)
+			h.writeError(w, http.StatusInternalServerError, errors.New("internal error"))
+			return
+		}
+
+		if !isVerified {
+			h.writeError(w, http.StatusForbidden, errors.New("email not verified"))
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -242,13 +317,16 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, err error) {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 
-	// Публичные
+	// Публичные маршруты
 	r.Post("/register", h.CreateUser)
 	r.Post("/login", h.LoginUser)
+	r.Post("/verify", h.VerifyUser)
+	r.Post("/resend-code", h.ResendVerificationCode)
 
-	// Приватные (нужен токен)
+	// Приватные маршруты (требуют верификации)
 	r.Group(func(r chi.Router) {
 		r.Use(h.AuthMiddleware)
+		r.Use(h.VerifiedOnlyMiddleware)
 
 		r.Post("/logout", h.LogoutUser)
 		r.Put("/{id}", h.UpdateUser)
