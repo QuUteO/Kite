@@ -12,6 +12,10 @@ type User struct {
 	UserName     string
 	Email        string
 	PasswordHash string
+	IsVerified   bool
+	VerifiedAt   time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type UserCreateDTO struct {
