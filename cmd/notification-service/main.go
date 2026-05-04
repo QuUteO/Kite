@@ -3,7 +3,6 @@ package main
 import (
 	"Kite/internal/config"
 	"Kite/internal/notification"
-	_ "Kite/internal/notification"
 	slogger "Kite/pkg/logger"
 	"context"
 	"errors"
