@@ -14,6 +14,10 @@ import (
 	"net/http"
 	"time"
 
+	server_handler "Kite/internal/server/handler"
+	server_repository "Kite/internal/server/repository"
+	server_service "Kite/internal/server/service"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -29,6 +33,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("init rabbitmq failed: %w", err)
 	}
+	defer rmqManager.Close()
 
 	router := newRouter(cfg, logger, db, rmqManager)
 	server := newHTTPServer(cfg, router)
@@ -60,6 +65,8 @@ func newRouter(cfg *config.Config, logger *slog.Logger, db database.DB, rmqManag
 
 	r.Mount("/user", newUserHandler(cfg, logger, db, producer).Routes())
 
+	r.Mount("/servers", newServerHandler(cfg, logger, db).Routes())
+
 	return r
 }
 
@@ -68,6 +75,13 @@ func newUserHandler(cfg *config.Config, logger *slog.Logger, db database.DB, pro
 	userService := service.New(userRepo, logger, cfg.JWT.Secret, producer, cfg)
 
 	return handler.New(userService, logger, cfg.JWT.Secret)
+}
+
+func newServerHandler(cfg *config.Config, logger *slog.Logger, db database.DB) *server_handler.Handler {
+	serverRepo := server_repository.New(db.Pool(), logger)
+	serverService := server_service.New(serverRepo, logger)
+
+	return server_handler.New(serverService, logger)
 }
 
 func newHTTPServer(cfg *config.Config, router http.Handler) *http.Server {
