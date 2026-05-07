@@ -153,19 +153,13 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetMessages(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value(userIDKey).(uuid.UUID)
-	if !ok {
-		h.writeError(w, http.StatusUnauthorized, errors.New("unauthorized"))
-		return
-	}
-
 	channelID := chi.URLParam(r, "channel_id")
 	if channelID == "" {
 		h.writeError(w, http.StatusBadRequest, errors.New("channel_id required"))
 		return
 	}
 
-	messages, err := h.srv.GetMessages(r.Context(), uuid.MustParse(channelID), userID, 50)
+	messages, err := h.srv.GetMessages(r.Context(), uuid.MustParse(channelID), 50)
 	if err != nil {
 		h.logger.Error("failed to get messages", "error", err)
 		h.writeError(w, http.StatusInternalServerError, err)
